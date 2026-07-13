@@ -30,6 +30,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -62,6 +64,7 @@ fun MomTVApp(
     volumeLevel: Float,
     resumeTick: Int = 0,
     isDefaultLauncher: Boolean = true,
+    locationAvailable: Boolean = true,
     onDismissScreensaver: () -> Unit,
     onDismissQuickSettings: () -> Unit,
     onSetDefaultLauncher: () -> Unit = {}
@@ -186,6 +189,7 @@ private fun EmptyState() {
 
 @Composable
 private fun TopBar(isDefaultLauncher: Boolean, onSetDefault: () -> Unit, onOpenSettings: () -> Unit) {
+    val context = LocalContext.current
     var time by remember { mutableStateOf("") }
     var date by remember { mutableStateOf("") }
     var greeting by remember { mutableStateOf("") }
@@ -204,8 +208,14 @@ private fun TopBar(isDefaultLauncher: Boolean, onSetDefault: () -> Unit, onOpenS
     }
 
     LaunchedEffect(Unit) {
-        weather = withContext(Dispatchers.IO) { WeatherService.fetchWeather() }
-        while (true) { delay(30 * 60 * 1000L); weather = withContext(Dispatchers.IO) { WeatherService.fetchWeather() } }
+        weather = withContext(Dispatchers.IO) { PrefsManager.getCachedWeather(context) }
+        val fresh = withContext(Dispatchers.IO) { WeatherService.fetchWeather() }
+        if (fresh != null) { weather = fresh; PrefsManager.cacheWeather(context, fresh) }
+        while (true) {
+            delay(30 * 60 * 1000L)
+            val w = withContext(Dispatchers.IO) { WeatherService.fetchWeather() }
+            if (w != null) { weather = w; PrefsManager.cacheWeather(context, w) }
+        }
     }
 
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 48.dp)) {
@@ -397,9 +407,12 @@ private fun AppCard(app: TvApp, modifier: Modifier = Modifier, onLaunch: () -> U
             .then(if (focused) Modifier.border(1.5.dp, FocusGlow.copy(alpha = borderAlpha), RoundedCornerShape(16.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }.focusable()
             .pointerInput(Unit) { detectTapGestures(onTap = { onLaunch() }, onLongPress = { onLongPress() }) }
+            .semantics { contentDescription = app.label }
             .onPreviewKeyEvent { event ->
+                val isConfirm = event.key == Key.Enter || event.key == Key.DirectionCenter
+                val isRepeat = event.nativeKeyEvent.repeatCount > 0
                 when {
-                    event.key == Key.Enter || event.key == Key.DirectionCenter -> {
+                    isConfirm && !isRepeat -> {
                         if (event.type == KeyEventType.KeyDown) {
                             if (centerDownTime == 0L) centerDownTime = System.currentTimeMillis()
                             if (System.currentTimeMillis() - centerDownTime > 600) { onLongPress(); centerDownTime = 0L; true } else false
@@ -408,6 +421,7 @@ private fun AppCard(app: TvApp, modifier: Modifier = Modifier, onLaunch: () -> U
                             if (held in 1..600) { onLaunch(); true } else true
                         } else false
                     }
+                    isConfirm && isRepeat -> false
                     event.type == KeyEventType.KeyDown && event.key == Key.Menu -> { onLongPress(); true }
                     else -> false
                 }
@@ -417,7 +431,7 @@ private fun AppCard(app: TvApp, modifier: Modifier = Modifier, onLaunch: () -> U
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center, modifier = Modifier.padding(10.dp)) {
             val iconSize = if (isSettings) 32 else 44
             if (app.icon != null) {
-                Image(painter = remember(app.icon) { BitmapPainter(app.icon) }, contentDescription = null, modifier = Modifier.size(iconSize.dp))
+                Image(painter = remember(app.icon) { BitmapPainter(app.icon) }, contentDescription = app.label, modifier = Modifier.size(iconSize.dp))
             } else if (isSettings) {
                 SettingsEmoji(app.label)
             } else {
@@ -560,52 +574,48 @@ fun PhotoScreensaver(onDismiss: () -> Unit) {
     val context = LocalContext.current
     var time by remember { mutableStateOf("") }
     var date by remember { mutableStateOf("") }
-    var photos by remember { mutableStateOf(emptyList<ImageBitmap>()) }
-    var currentPhotoIndex by remember { mutableIntStateOf(0) }
+    var photoIds by remember { mutableStateOf(emptyList<Long>()) }
+    var currentPhoto by remember { mutableStateOf<ImageBitmap?>(null) }
+    var photoIndex by remember { mutableIntStateOf(0) }
 
     val drift = rememberInfiniteTransition(label = "d")
     val dx by drift.animateFloat(0f, 1f, infiniteRepeatable(tween(25_000, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "dx")
     val dy by drift.animateFloat(0f, 1f, infiniteRepeatable(tween(19_000, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "dy")
 
-    // Load photos from gallery
     LaunchedEffect(Unit) {
-        photos = withContext(Dispatchers.IO) { loadGalleryPhotos(context, maxCount = 20) }
+        photoIds = withContext(Dispatchers.IO) { getGalleryPhotoIds(context, 50) }
+        if (photoIds.isNotEmpty()) {
+            currentPhoto = withContext(Dispatchers.IO) { loadSinglePhoto(context, photoIds[0]) }
+        }
     }
 
     LaunchedEffect(Unit) {
         val tf = SimpleDateFormat("h:mm a", Locale.getDefault())
         val df = SimpleDateFormat("EEEE, d MMMM", Locale.getDefault())
-        while (true) {
-            val now = Date(); time = tf.format(now); date = df.format(now)
-            delay(15_000)
-        }
+        while (true) { val now = Date(); time = tf.format(now); date = df.format(now); delay(15_000) }
     }
 
-    // Cycle photos every 12 seconds
-    LaunchedEffect(photos) {
-        if (photos.isNotEmpty()) {
-            while (true) { delay(12_000); currentPhotoIndex = (currentPhotoIndex + 1) % photos.size }
+    LaunchedEffect(photoIds) {
+        if (photoIds.isNotEmpty()) {
+            while (true) {
+                delay(12_000)
+                photoIndex = (photoIndex + 1) % photoIds.size
+                val next = withContext(Dispatchers.IO) { loadSinglePhoto(context, photoIds[photoIndex]) }
+                if (next != null) currentPhoto = next
+            }
         }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black).clickable { onDismiss() }, contentAlignment = Alignment.Center) {
-        // Photo background with crossfade
-        if (photos.isNotEmpty()) {
-            val photoAlpha by animateFloatAsState(0.35f, tween(2000), label = "pa")
-            Crossfade(targetState = currentPhotoIndex, animationSpec = tween(2000), label = "photo") { idx ->
-                val photo = photos.getOrNull(idx % photos.size)
-                if (photo != null) {
-                    Image(
-                        painter = remember(photo) { BitmapPainter(photo) },
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize().graphicsLayer { alpha = photoAlpha },
-                        contentScale = ContentScale.Crop
-                    )
-                }
-            }
+        currentPhoto?.let { photo ->
+            Image(
+                painter = remember(photo) { BitmapPainter(photo) },
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = 0.3f },
+                contentScale = ContentScale.Crop
+            )
         }
 
-        // Clock overlay
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier.graphicsLayer { translationX = (dx - 0.5f) * 400f; translationY = (dy - 0.5f) * 150f }
@@ -616,31 +626,28 @@ fun PhotoScreensaver(onDismiss: () -> Unit) {
     }
 }
 
-private fun loadGalleryPhotos(context: android.content.Context, maxCount: Int): List<ImageBitmap> {
-    val photos = mutableListOf<ImageBitmap>()
+private fun getGalleryPhotoIds(context: android.content.Context, maxCount: Int): List<Long> {
+    val ids = mutableListOf<Long>()
     try {
         val uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val projection = arrayOf(MediaStore.Images.Media._ID)
         val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
-        val cursor = context.contentResolver.query(uri, projection, null, null, sortOrder) ?: return photos
-
+        val cursor = context.contentResolver.query(uri, projection, null, null, sortOrder) ?: return ids
         cursor.use {
             val idCol = it.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-            var count = 0
-            while (it.moveToNext() && count < maxCount) {
-                val id = it.getLong(idCol)
-                val imageUri = ContentUris.withAppendedId(uri, id)
-                try {
-                    val input = context.contentResolver.openInputStream(imageUri) ?: continue
-                    val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
-                    val bmp = BitmapFactory.decodeStream(input, null, opts)
-                    input.close()
-                    if (bmp != null) { photos.add(bmp.asImageBitmap()); count++ }
-                } catch (_: Exception) {}
-            }
+            while (it.moveToNext() && ids.size < maxCount) { ids.add(it.getLong(idCol)) }
         }
-    } catch (_: SecurityException) {
-        // READ_EXTERNAL_STORAGE / READ_MEDIA_IMAGES not granted
     } catch (_: Exception) {}
-    return photos
+    return ids
+}
+
+private fun loadSinglePhoto(context: android.content.Context, id: Long): ImageBitmap? {
+    return try {
+        val imageUri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+        val input = context.contentResolver.openInputStream(imageUri) ?: return null
+        val opts = BitmapFactory.Options().apply { inSampleSize = 8 }
+        val bmp = BitmapFactory.decodeStream(input, null, opts)
+        input.close()
+        bmp?.asImageBitmap()
+    } catch (_: Exception) { null }
 }

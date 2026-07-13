@@ -1,5 +1,6 @@
 package com.binny.smarttv
 
+import android.app.NotificationManager
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
@@ -11,6 +12,10 @@ object PrefsManager {
     private const val KEY_FAVORITES = "favorites"
     private const val KEY_RECENTS = "recents"
     private const val KEY_HIDDEN = "hidden"
+    private const val KEY_DND_PREV = "dnd_previous_filter"
+    private const val KEY_WEATHER_TEMP = "weather_temp"
+    private const val KEY_WEATHER_CODE = "weather_code"
+    private const val KEY_WEATHER_TIME = "weather_time"
     private const val MAX_RECENTS = 6
 
     private fun prefs(context: Context): SharedPreferences =
@@ -80,5 +85,30 @@ object PrefsManager {
         }
 
         if (changed) Log.d("MomTV", "Pruned orphaned prefs entries")
+    }
+
+    fun saveDndState(context: Context, filter: Int) {
+        prefs(context).edit().putInt(KEY_DND_PREV, filter).apply()
+    }
+
+    fun getSavedDndState(context: Context): Int {
+        return prefs(context).getInt(KEY_DND_PREV, NotificationManager.INTERRUPTION_FILTER_ALL)
+    }
+
+    fun cacheWeather(context: Context, data: WeatherData) {
+        prefs(context).edit()
+            .putFloat(KEY_WEATHER_TEMP, data.temperature.toFloat())
+            .putInt(KEY_WEATHER_CODE, data.weatherCode)
+            .putLong(KEY_WEATHER_TIME, System.currentTimeMillis())
+            .apply()
+    }
+
+    fun getCachedWeather(context: Context): WeatherData? {
+        val p = prefs(context)
+        if (!p.contains(KEY_WEATHER_TEMP)) return null
+        return WeatherData(
+            temperature = p.getFloat(KEY_WEATHER_TEMP, 0f).toDouble(),
+            weatherCode = p.getInt(KEY_WEATHER_CODE, 0)
+        )
     }
 }

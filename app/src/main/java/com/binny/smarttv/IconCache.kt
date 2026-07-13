@@ -5,14 +5,16 @@ import android.content.pm.PackageManager
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.graphics.drawable.toBitmap
+import java.util.concurrent.ConcurrentHashMap
 
 object IconCache {
 
-    private val cache = mutableMapOf<String, ImageBitmap>()
-    private var lastPackageHash = 0
+    private val cache = ConcurrentHashMap<String, ImageBitmap>()
+    @Volatile private var lastPackageHash = 0
 
     fun getIcon(pkg: String): ImageBitmap? = cache[pkg]
 
+    @Synchronized
     fun loadIcons(context: Context, packages: Set<String>): Boolean {
         val hash = packages.hashCode()
         if (hash == lastPackageHash && cache.isNotEmpty()) return false

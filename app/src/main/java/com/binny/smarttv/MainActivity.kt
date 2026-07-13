@@ -7,18 +7,18 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.LocationManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -32,12 +32,20 @@ class MainActivity : ComponentActivity() {
     val volumeLevel = mutableFloatStateOf(0.5f)
     val resumeCounter = mutableIntStateOf(0)
     val isDefaultLauncher = mutableStateOf(true)
+    val locationAvailable = mutableStateOf(true)
 
     private var idleRunnable: Runnable? = null
     private var volumeHideRunnable: Runnable? = null
     private var swallowNextUp = false
     private val idleTimeoutMs = 3L * 60 * 1000
-    private var previousInterruptionFilter = NotificationManager.INTERRUPTION_FILTER_ALL
+
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        val locationGranted = results[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        locationAvailable.value = locationGranted
+        if (locationGranted) initLocationWeather()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,8 +63,13 @@ class MainActivity : ComponentActivity() {
         controller.hide(WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() { /* launcher never exits */ }
+        })
+
+        configureDeviceForTvUse()
         enableDndMode()
-        requestRuntimePermissions()
+        requestPermissions()
         initLocationWeather()
         checkDefaultLauncher()
         resetIdleTimer()
@@ -69,6 +82,7 @@ class MainActivity : ComponentActivity() {
                 volumeLevel = volumeLevel.floatValue,
                 resumeTick = resumeCounter.intValue,
                 isDefaultLauncher = isDefaultLauncher.value,
+                locationAvailable = locationAvailable.value,
                 onDismissScreensaver = {
                     showScreensaver.value = false
                     resetIdleTimer()
@@ -89,14 +103,9 @@ class MainActivity : ComponentActivity() {
         resetIdleTimer()
     }
 
-    override fun onBackPressed() {
-        // Launcher should never exit on back press
-    }
-
     override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
         if (event == null) return super.dispatchKeyEvent(event)
 
-        // Screensaver: any key dismisses
         if (showScreensaver.value && event.action == KeyEvent.ACTION_DOWN) {
             showScreensaver.value = false
             resetIdleTimer()
@@ -108,7 +117,6 @@ class MainActivity : ComponentActivity() {
             return true
         }
 
-        // Volume keys: custom overlay
         if (event.action == KeyEvent.ACTION_DOWN) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN -> {
@@ -123,7 +131,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        // Suppress volume key up events too
         if (event.action == KeyEvent.ACTION_UP &&
             (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)) {
             return true
@@ -137,6 +144,19 @@ class MainActivity : ComponentActivity() {
         super.onUserInteraction()
         if (showScreensaver.value) showScreensaver.value = false
         resetIdleTimer()
+    }
+
+    private fun configureDeviceForTvUse() {
+        try {
+            if (Settings.System.canWrite(this)) {
+                Settings.System.putInt(contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, Int.MAX_VALUE)
+                Settings.System.putInt(contentResolver, Settings.System.ACCELEROMETER_ROTATION, 0)
+            }
+        } catch (_: Exception) {}
+
+        try {
+            Settings.Global.putInt(contentResolver, Settings.Global.STAY_ON_WHILE_PLUGGED_IN, 3)
+        } catch (_: Exception) {}
     }
 
     private fun handleVolumeKey(up: Boolean) {
@@ -157,7 +177,8 @@ class MainActivity : ComponentActivity() {
         try {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (nm.isNotificationPolicyAccessGranted) {
-                previousInterruptionFilter = nm.currentInterruptionFilter
+                val prev = nm.currentInterruptionFilter
+                PrefsManager.saveDndState(this, prev)
                 nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_NONE)
             }
         } catch (_: Exception) {}
@@ -167,9 +188,25 @@ class MainActivity : ComponentActivity() {
         try {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (nm.isNotificationPolicyAccessGranted) {
-                nm.setInterruptionFilter(previousInterruptionFilter)
+                val prev = PrefsManager.getSavedDndState(this)
+                nm.setInterruptionFilter(prev)
             }
         } catch (_: Exception) {}
+    }
+
+    private fun requestPermissions() {
+        val needed = mutableListOf<String>()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            locationAvailable.value = false
+        }
+        val storage = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
+        if (ContextCompat.checkSelfPermission(this, storage) != PackageManager.PERMISSION_GRANTED) {
+            needed.add(storage)
+        }
+        if (needed.isNotEmpty()) {
+            permissionLauncher.launch(needed.toTypedArray())
+        }
     }
 
     private fun initLocationWeather() {
@@ -180,9 +217,10 @@ class MainActivity : ComponentActivity() {
                 ?: lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
             if (loc != null) {
                 WeatherService.setLocation(loc.latitude, loc.longitude)
+                locationAvailable.value = true
             }
         } catch (_: SecurityException) {
-            // Location permission not granted — use default city
+            locationAvailable.value = false
         } catch (_: Exception) {}
     }
 
@@ -193,28 +231,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun promptSetDefaultLauncher() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val rm = getSystemService(Context.ROLE_SERVICE) as RoleManager
-            if (rm.isRoleAvailable(RoleManager.ROLE_HOME) && !rm.isRoleHeld(RoleManager.ROLE_HOME)) {
-                startActivity(rm.createRequestRoleIntent(RoleManager.ROLE_HOME))
-                return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val rm = getSystemService(Context.ROLE_SERVICE) as RoleManager
+                if (rm.isRoleAvailable(RoleManager.ROLE_HOME) && !rm.isRoleHeld(RoleManager.ROLE_HOME)) {
+                    startActivity(rm.createRequestRoleIntent(RoleManager.ROLE_HOME))
+                    return
+                }
             }
-        }
-        startActivity(Intent(Settings.ACTION_HOME_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-    }
-
-    private fun requestRuntimePermissions() {
-        val needed = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.ACCESS_COARSE_LOCATION)
-        }
-        val storagePermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
-        if (ContextCompat.checkSelfPermission(this, storagePermission) != PackageManager.PERMISSION_GRANTED) {
-            needed.add(storagePermission)
-        }
-        if (needed.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, needed.toTypedArray(), 100)
-        }
+            startActivity(Intent(Settings.ACTION_HOME_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {}
     }
 
     private fun resetIdleTimer() {
