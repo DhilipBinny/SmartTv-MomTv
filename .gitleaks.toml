@@ -1,0 +1,89 @@
+title = "Project Gitleaks Configuration"
+
+# Extend built-in default rules (222 rules covering AWS, GitHub, GitLab,
+# Anthropic, OpenAI, Stripe, Slack, Discord, Azure, GCP, private keys, JWTs, etc.)
+[extend]
+useDefault = true
+
+# Disable noisy rules that produce too many false positives (uncomment as needed)
+# disabledRules = ["generic-api-key"]
+
+# ============================================================================
+# GLOBAL ALLOWLIST — applies to ALL rules
+# ============================================================================
+[[allowlists]]
+description = "Ignore lock files, vendored code, and binary assets"
+paths = [
+    '''gitleaks\.toml''',
+    '''\.gitleaksignore''',
+
+    # Lock files (all package managers)
+    '''package-lock\.json''',
+    '''pnpm-lock\.yaml''',
+    '''yarn\.lock''',
+    '''go\.sum''',
+    '''Cargo\.lock''',
+    '''Gemfile\.lock''',
+    '''composer\.lock''',
+    '''poetry\.lock''',
+    '''Pipfile\.lock''',
+    '''packages\.lock\.json''',
+
+    # Vendored / third-party
+    '''vendor/''',
+    '''node_modules/''',
+    '''\.git/''',
+    '''bower_components/''',
+
+    # Binary / media assets
+    '''(.*?)\.(jpg|jpeg|png|gif|svg|ico|bmp|tiff|webp)''',
+    '''(.*?)\.(woff|woff2|ttf|eot|otf)''',
+    '''(.*?)\.(pdf|docx|xlsx|pptx|zip|tar|gz|rar|7z)''',
+    '''(.*?)\.(dll|exe|so|dylib|o|a|wasm)''',
+
+    # Example / template files
+    '''\.env\.example''',
+    '''\.env\.sample''',
+    '''\.env\.template''',
+
+    # Module files
+    '''go\.mod''',
+]
+
+[[allowlists]]
+description = "Ignore known placeholder / example values"
+stopwords = [
+    "example",
+    "placeholder",
+    "changeme",
+    "your-",
+    "insert-",
+    "replace-",
+    "EXAMPLE",
+    "CHANGEME",
+    "YOUR_",
+    "dummy",
+    "sample",
+    "test-key",
+    "fake-",
+    "xxx",
+]
+
+# ============================================================================
+# CUSTOM RULES — add project-specific secret patterns here
+# ============================================================================
+
+# Example: uncomment and adapt for your internal API keys
+# [[rules]]
+# id = "internal-api-key"
+# description = "Internal service API key"
+# regex = '''(?i)internal[_-]?api[_-]?key\s*[=:]\s*["']([A-Za-z0-9_\-]{32,})["']'''
+# secretGroup = 1
+# entropy = 3.5
+# keywords = ["internal_api_key", "internal-api-key"]
+# tags = ["internal", "api-key"]
+#
+#     [[rules.allowlists]]
+#     description = "Allow test values"
+#     paths = ['''test/''', '''__tests__/''', '''tests/''']
+#     stopwords = ["test", "fake", "mock"]

@@ -95,11 +95,23 @@ class MainActivity : ComponentActivity() {
         resetIdleTimer()
     }
 
+    private var previousInterruptionFilter = NotificationManager.INTERRUPTION_FILTER_ALL
+
     private fun enableDndMode() {
         try {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (nm.isNotificationPolicyAccessGranted) {
+                previousInterruptionFilter = nm.currentInterruptionFilter
                 nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_NONE)
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun restoreDndMode() {
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (nm.isNotificationPolicyAccessGranted) {
+                nm.setInterruptionFilter(previousInterruptionFilter)
             }
         } catch (_: Exception) {}
     }
@@ -110,8 +122,14 @@ class MainActivity : ComponentActivity() {
         window.decorView.postDelayed(idleRunnable!!, idleTimeoutMs)
     }
 
+    override fun onPause() {
+        super.onPause()
+        idleRunnable?.let { window.decorView.removeCallbacks(it) }
+    }
+
     override fun onDestroy() {
         idleRunnable?.let { window.decorView.removeCallbacks(it) }
+        restoreDndMode()
         super.onDestroy()
     }
 }

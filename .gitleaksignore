@@ -1,0 +1,9 @@
+# .gitleaksignore — Add fingerprints of known false positives here.
+#
+# Format: commit:file:rule:line
+# Example: cd5226711335c68be1e720b318b7bc3135a30eb2:config/defaults.go:generic-api-key:23
+#
+# To get fingerprints, run: gitleaks git --report-path report.json --report-format json
+# Then copy the "Fingerprint" field from each finding you want to ignore.
+#
+# You can also suppress individual lines inline with: // gitleaks:allow

@@ -27,9 +27,8 @@ data class WeatherData(
 
 object WeatherService {
 
-    // Default: Chennai, India. Override with actual location if available.
-    private var latitude = 13.08
-    private var longitude = 80.27
+    @Volatile private var latitude = 13.08
+    @Volatile private var longitude = 80.27
 
     fun setLocation(lat: Double, lon: Double) {
         latitude = lat
@@ -37,15 +36,15 @@ object WeatherService {
     }
 
     fun fetchWeather(): WeatherData? {
+        var conn: HttpURLConnection? = null
         return try {
             val url = URL(
                 "https://api.open-meteo.com/v1/forecast?latitude=$latitude&longitude=$longitude&current_weather=true"
             )
-            val conn = url.openConnection() as HttpURLConnection
+            conn = url.openConnection() as HttpURLConnection
             conn.connectTimeout = 5000
             conn.readTimeout = 5000
             val response = conn.inputStream.bufferedReader().readText()
-            conn.disconnect()
 
             val json = JSONObject(response)
             val current = json.getJSONObject("current_weather")
@@ -56,6 +55,8 @@ object WeatherService {
         } catch (e: Exception) {
             Log.e("MomTV", "Weather fetch failed", e)
             null
+        } finally {
+            conn?.disconnect()
         }
     }
 }

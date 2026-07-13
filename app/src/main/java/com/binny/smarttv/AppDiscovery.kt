@@ -18,8 +18,6 @@ data class TvApp(
 )
 
 enum class AppCategory(val title: String) {
-    FAVORITES("Favorites"),
-    RECENT("Recently Opened"),
     WATCH("Watch"),
     MUSIC("Music"),
     APPS("Apps"),
@@ -108,12 +106,11 @@ object AppDiscovery {
                 return
             }
 
-            PrefsManager.recordRecent(context, app.packageName)
-
             val launchIntent = context.packageManager.getLaunchIntentForPackage(app.packageName)
             if (launchIntent != null) {
                 launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 context.startActivity(launchIntent)
+                PrefsManager.recordRecent(context, app.packageName)
             }
         } catch (e: Exception) {
             Log.e("MomTV", "Failed to launch ${app.label}", e)
