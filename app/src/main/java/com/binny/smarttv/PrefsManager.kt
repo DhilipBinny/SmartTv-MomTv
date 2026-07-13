@@ -63,4 +63,22 @@ object PrefsManager {
 
     fun toggleHidden(context: Context, packageName: String): Boolean =
         toggleInSet(context, KEY_HIDDEN, packageName)
+
+    fun pruneOrphans(context: Context, installedPkgs: Set<String>) {
+        var changed = false
+
+        val favs = getStringList(context, KEY_FAVORITES)
+        val prunedFavs = favs.filter { it in installedPkgs }
+        if (prunedFavs.size != favs.size) {
+            saveStringList(context, KEY_FAVORITES, prunedFavs); changed = true
+        }
+
+        val recs = getStringList(context, KEY_RECENTS)
+        val prunedRecs = recs.filter { it in installedPkgs }
+        if (prunedRecs.size != recs.size) {
+            saveStringList(context, KEY_RECENTS, prunedRecs); changed = true
+        }
+
+        if (changed) Log.d("MomTV", "Pruned orphaned prefs entries")
+    }
 }

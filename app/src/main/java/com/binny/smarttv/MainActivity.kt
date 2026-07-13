@@ -1,12 +1,20 @@
 package com.binny.smarttv
 
 import android.app.NotificationManager
+import android.app.role.RoleManager
 import android.content.Context
+import android.content.Intent
+import android.location.LocationManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -16,10 +24,16 @@ class MainActivity : ComponentActivity() {
 
     val showScreensaver = mutableStateOf(false)
     val showQuickSettings = mutableStateOf(false)
-    val resumeCounter = mutableStateOf(0)
+    val showVolumeOverlay = mutableStateOf(false)
+    val volumeLevel = mutableFloatStateOf(0.5f)
+    val resumeCounter = mutableIntStateOf(0)
+    val isDefaultLauncher = mutableStateOf(true)
+
     private var idleRunnable: Runnable? = null
+    private var volumeHideRunnable: Runnable? = null
     private var swallowNextUp = false
     private val idleTimeoutMs = 3L * 60 * 1000
+    private var previousInterruptionFilter = NotificationManager.INTERRUPTION_FILTER_ALL
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -38,13 +52,19 @@ class MainActivity : ComponentActivity() {
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
         enableDndMode()
+        initLocationWeather()
+        checkDefaultLauncher()
+        ensureWriteSettings()
         resetIdleTimer()
 
         setContent {
             MomTVApp(
                 showScreensaver = showScreensaver.value,
                 showQuickSettings = showQuickSettings.value,
-                resumeTick = resumeCounter.value,
+                showVolumeOverlay = showVolumeOverlay.value,
+                volumeLevel = volumeLevel.floatValue,
+                resumeTick = resumeCounter.intValue,
+                isDefaultLauncher = isDefaultLauncher.value,
                 onDismissScreensaver = {
                     showScreensaver.value = false
                     resetIdleTimer()
@@ -52,15 +72,21 @@ class MainActivity : ComponentActivity() {
                 onDismissQuickSettings = {
                     showQuickSettings.value = false
                     resetIdleTimer()
-                }
+                },
+                onSetDefaultLauncher = { promptSetDefaultLauncher() }
             )
         }
     }
 
     override fun onResume() {
         super.onResume()
-        resumeCounter.value++
+        resumeCounter.intValue++
+        checkDefaultLauncher()
         resetIdleTimer()
+    }
+
+    override fun onBackPressed() {
+        // Launcher should never exit on back press
     }
 
     override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
@@ -78,10 +104,24 @@ class MainActivity : ComponentActivity() {
             return true
         }
 
-        // Menu key toggles quick settings
-        if (event.keyCode == KeyEvent.KEYCODE_MENU && event.action == KeyEvent.ACTION_DOWN) {
-            showQuickSettings.value = !showQuickSettings.value
-            resetIdleTimer()
+        // Volume keys: custom overlay
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                    handleVolumeKey(event.keyCode == KeyEvent.KEYCODE_VOLUME_UP)
+                    resetIdleTimer()
+                    return true
+                }
+                KeyEvent.KEYCODE_MENU -> {
+                    showQuickSettings.value = !showQuickSettings.value
+                    resetIdleTimer()
+                    return true
+                }
+            }
+        }
+        // Suppress volume key up events too
+        if (event.action == KeyEvent.ACTION_UP &&
+            (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)) {
             return true
         }
 
@@ -95,7 +135,19 @@ class MainActivity : ComponentActivity() {
         resetIdleTimer()
     }
 
-    private var previousInterruptionFilter = NotificationManager.INTERRUPTION_FILTER_ALL
+    private fun handleVolumeKey(up: Boolean) {
+        val am = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        val current = am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+        val newVol = if (up) (current + 1).coerceAtMost(max) else (current - 1).coerceAtLeast(0)
+        am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, newVol, 0)
+        volumeLevel.floatValue = newVol.toFloat() / max.toFloat()
+        showVolumeOverlay.value = true
+
+        volumeHideRunnable?.let { window.decorView.removeCallbacks(it) }
+        volumeHideRunnable = Runnable { showVolumeOverlay.value = false }
+        window.decorView.postDelayed(volumeHideRunnable!!, 2000)
+    }
 
     private fun enableDndMode() {
         try {
@@ -116,6 +168,48 @@ class MainActivity : ComponentActivity() {
         } catch (_: Exception) {}
     }
 
+    private fun initLocationWeather() {
+        try {
+            val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            @Suppress("DEPRECATION")
+            val loc = lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                ?: lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            if (loc != null) {
+                WeatherService.setLocation(loc.latitude, loc.longitude)
+            }
+        } catch (_: SecurityException) {
+            // Location permission not granted — use default city
+        } catch (_: Exception) {}
+    }
+
+    private fun checkDefaultLauncher() {
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val resolveInfo = packageManager.resolveActivity(intent, 0)
+        isDefaultLauncher.value = resolveInfo?.activityInfo?.packageName == packageName
+    }
+
+    private fun promptSetDefaultLauncher() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val rm = getSystemService(Context.ROLE_SERVICE) as RoleManager
+            if (rm.isRoleAvailable(RoleManager.ROLE_HOME) && !rm.isRoleHeld(RoleManager.ROLE_HOME)) {
+                startActivity(rm.createRequestRoleIntent(RoleManager.ROLE_HOME))
+                return
+            }
+        }
+        startActivity(Intent(Settings.ACTION_HOME_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    private fun ensureWriteSettings() {
+        if (!Settings.System.canWrite(this)) {
+            try {
+                val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS)
+                intent.data = Uri.parse("package:$packageName")
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun resetIdleTimer() {
         idleRunnable?.let { window.decorView.removeCallbacks(it) }
         idleRunnable = Runnable { showScreensaver.value = true }
@@ -125,10 +219,12 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         idleRunnable?.let { window.decorView.removeCallbacks(it) }
+        volumeHideRunnable?.let { window.decorView.removeCallbacks(it) }
     }
 
     override fun onDestroy() {
         idleRunnable?.let { window.decorView.removeCallbacks(it) }
+        volumeHideRunnable?.let { window.decorView.removeCallbacks(it) }
         restoreDndMode()
         super.onDestroy()
     }

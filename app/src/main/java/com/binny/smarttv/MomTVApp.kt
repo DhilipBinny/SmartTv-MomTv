@@ -1,5 +1,8 @@
 package com.binny.smarttv
 
+import android.content.Intent
+import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
@@ -25,6 +28,7 @@ import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -36,7 +40,6 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 
-// Apple-inspired dark palette
 private val Bg = Color(0xFF000000)
 private val Surface = Color(0xFF1C1C1E)
 private val SurfaceFocused = Color(0xFF2C2C2E)
@@ -50,16 +53,19 @@ private val AccentBlue = Color(0xFF0A84FF)
 fun MomTVApp(
     showScreensaver: Boolean,
     showQuickSettings: Boolean,
+    showVolumeOverlay: Boolean,
+    volumeLevel: Float,
     resumeTick: Int = 0,
+    isDefaultLauncher: Boolean = true,
     onDismissScreensaver: () -> Unit,
-    onDismissQuickSettings: () -> Unit
+    onDismissQuickSettings: () -> Unit,
+    onSetDefaultLauncher: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var allApps by remember { mutableStateOf(emptyList<TvApp>()) }
     var favorites by remember { mutableStateOf(emptySet<String>()) }
     var recents by remember { mutableStateOf(emptyList<String>()) }
     var refreshTick by remember { mutableIntStateOf(0) }
-
     var contextApp by remember { mutableStateOf<TvApp?>(null) }
 
     LaunchedEffect(refreshTick, resumeTick) {
@@ -74,57 +80,37 @@ fun MomTVApp(
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Bg)) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(top = 28.dp, bottom = 12.dp)
-        ) {
-            TopBar()
+        Column(modifier = Modifier.fillMaxSize().padding(top = 28.dp, bottom = 12.dp)) {
+            TopBar(isDefaultLauncher = isDefaultLauncher, onSetDefault = onSetDefaultLauncher)
             Spacer(modifier = Modifier.height(28.dp))
             AppGrid(
                 allApps = allApps,
                 favorites = favorites,
                 recents = recents,
-                onLaunch = { app ->
-                    AppDiscovery.launchApp(context, app)
-                    refreshTick++
-                },
+                onLaunch = { app -> AppDiscovery.launchApp(context, app); refreshTick++ },
                 onLongPress = { app -> contextApp = app }
             )
         }
 
-        // Context menu
         contextApp?.let { app ->
             ContextMenu(
                 app = app,
                 isFavorite = app.packageName in favorites,
                 onDismiss = { contextApp = null },
-                onToggleFavorite = {
-                    PrefsManager.toggleFavorite(context, app.packageName)
-                    refreshTick++
-                    contextApp = null
-                },
-                onHide = {
-                    PrefsManager.toggleHidden(context, app.packageName)
-                    refreshTick++
-                    contextApp = null
-                }
+                onToggleFavorite = { PrefsManager.toggleFavorite(context, app.packageName); refreshTick++; contextApp = null },
+                onHide = { PrefsManager.toggleHidden(context, app.packageName); refreshTick++; contextApp = null }
             )
         }
 
-        // Quick settings
-        AnimatedVisibility(
-            visible = showQuickSettings,
-            enter = fadeIn(tween(200)),
-            exit = fadeOut(tween(150))
-        ) {
+        AnimatedVisibility(visible = showQuickSettings, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) {
             QuickSettingsPanel(onDismiss = onDismissQuickSettings)
         }
 
-        // Screensaver
-        AnimatedVisibility(
-            visible = showScreensaver,
-            enter = fadeIn(tween(1200)),
-            exit = fadeOut(tween(400))
-        ) {
+        AnimatedVisibility(visible = showVolumeOverlay, enter = fadeIn(tween(100)), exit = fadeOut(tween(300))) {
+            VolumeOverlay(level = volumeLevel)
+        }
+
+        AnimatedVisibility(visible = showScreensaver, enter = fadeIn(tween(1200)), exit = fadeOut(tween(400))) {
             PhotoScreensaver(onDismiss = onDismissScreensaver)
         }
     }
@@ -133,7 +119,7 @@ fun MomTVApp(
 // ─── Top Bar ───────────────────────────────────────────────
 
 @Composable
-private fun TopBar() {
+private fun TopBar(isDefaultLauncher: Boolean, onSetDefault: () -> Unit) {
     var time by remember { mutableStateOf("") }
     var date by remember { mutableStateOf("") }
     var greeting by remember { mutableStateOf("") }
@@ -164,50 +150,70 @@ private fun TopBar() {
         }
     }
 
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 48.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.Top
-    ) {
-        Column {
-            Text(
-                text = greeting,
-                style = TextStyle(
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Normal,
-                    color = TextSec,
-                    letterSpacing = 0.5.sp
-                )
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = date,
-                style = TextStyle(
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Normal,
-                    color = TextTer
-                )
-            )
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 48.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top
+        ) {
+            Column {
+                Text(greeting, style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Normal, color = TextSec, letterSpacing = 0.5.sp))
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(date, style = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Normal, color = TextTer))
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                weather?.let { w ->
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(text = w.icon, fontSize = 18.sp)
+                        Text(w.tempDisplay, style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextSec))
+                    }
+                }
+                Text(time, style = TextStyle(fontSize = 32.sp, fontWeight = FontWeight.Thin, color = TextW.copy(alpha = 0.9f), letterSpacing = 2.sp))
+            }
         }
 
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            weather?.let { w ->
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(text = w.icon, fontSize = 18.sp)
-                    Text(
-                        text = w.tempDisplay,
-                        style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextSec)
-                    )
-                }
+        if (!isDefaultLauncher) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Tap here to set MomTV as your default launcher",
+                style = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Normal, color = AccentBlue),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(AccentBlue.copy(alpha = 0.1f))
+                    .clickable { onSetDefault() }
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
+            )
+        }
+    }
+}
+
+// ─── Volume Overlay ────────────────────────────────────────
+
+@Composable
+private fun VolumeOverlay(level: Float) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+        Row(
+            modifier = Modifier
+                .padding(top = 80.dp)
+                .width(200.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(SurfaceFocused.copy(alpha = 0.92f))
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("♪", fontSize = 16.sp, color = TextSec)
+            Box(
+                modifier = Modifier.weight(1f).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color(0xFF3A3A3C))
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxHeight().fillMaxWidth(level.coerceIn(0f, 1f)).clip(RoundedCornerShape(2.dp)).background(TextW)
+                )
             }
             Text(
-                text = time,
-                style = TextStyle(
-                    fontSize = 32.sp,
-                    fontWeight = FontWeight.Thin,
-                    color = TextW.copy(alpha = 0.9f),
-                    letterSpacing = 2.sp
-                )
+                "${(level * 100).toInt()}%",
+                style = TextStyle(fontSize = 12.sp, fontWeight = FontWeight.Medium, color = TextW, fontFamily = FontFamily.Monospace)
             )
         }
     }
@@ -217,21 +223,13 @@ private fun TopBar() {
 
 @Composable
 private fun AppGrid(
-    allApps: List<TvApp>,
-    favorites: Set<String>,
-    recents: List<String>,
-    onLaunch: (TvApp) -> Unit,
-    onLongPress: (TvApp) -> Unit
+    allApps: List<TvApp>, favorites: Set<String>, recents: List<String>,
+    onLaunch: (TvApp) -> Unit, onLongPress: (TvApp) -> Unit
 ) {
     val appMap = remember(allApps) { allApps.associateBy { it.packageName } }
     val grouped = remember(allApps) { allApps.groupBy { it.category } }
-
-    val favApps = remember(favorites, appMap) {
-        favorites.mapNotNull { appMap[it] }
-    }
-    val recentApps = remember(recents, appMap, favorites) {
-        recents.filter { it !in favorites }.mapNotNull { appMap[it] }
-    }
+    val favApps = remember(favorites, appMap) { favorites.mapNotNull { appMap[it] } }
+    val recentApps = remember(recents, appMap, favorites) { recents.filter { it !in favorites }.mapNotNull { appMap[it] } }
 
     data class RowData(val key: String, val title: String, val apps: List<TvApp>, val isFirst: Boolean = false)
 
@@ -239,8 +237,7 @@ private fun AppGrid(
         val r = mutableListOf<RowData>()
         if (favApps.isNotEmpty()) r.add(RowData("fav", "Favorites", favApps, isFirst = true))
         if (recentApps.isNotEmpty()) r.add(RowData("rec", "Recent", recentApps, isFirst = r.isEmpty()))
-        val cats = listOf(AppCategory.WATCH, AppCategory.MUSIC, AppCategory.APPS, AppCategory.SETTINGS)
-        for (cat in cats) {
+        for (cat in listOf(AppCategory.WATCH, AppCategory.MUSIC, AppCategory.APPS, AppCategory.SETTINGS)) {
             val apps = grouped[cat] ?: continue
             if (apps.isEmpty()) continue
             r.add(RowData(cat.name, cat.title, apps, isFirst = r.isEmpty()))
@@ -254,43 +251,27 @@ private fun AppGrid(
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
         items(rows, key = { it.key }) { row ->
-            AppRow(
-                title = row.title,
-                apps = row.apps,
-                isFirst = row.isFirst,
-                onLaunch = onLaunch,
-                onLongPress = onLongPress
-            )
+            AppRow(title = row.title, apps = row.apps, isFirst = row.isFirst, onLaunch = onLaunch, onLongPress = onLongPress)
         }
     }
 }
 
 @Composable
 private fun AppRow(
-    title: String,
-    apps: List<TvApp>,
-    isFirst: Boolean,
-    onLaunch: (TvApp) -> Unit,
-    onLongPress: (TvApp) -> Unit
+    title: String, apps: List<TvApp>, isFirst: Boolean,
+    onLaunch: (TvApp) -> Unit, onLongPress: (TvApp) -> Unit
 ) {
     val listState = rememberLazyListState()
     val firstFocus = remember { FocusRequester() }
 
     if (isFirst) {
-        LaunchedEffect(Unit) {
-            try { firstFocus.requestFocus() } catch (_: Exception) {}
-        }
+        LaunchedEffect(Unit) { try { firstFocus.requestFocus() } catch (_: Exception) {} }
     }
 
     Column {
         Text(
             text = title.uppercase(),
-            style = TextStyle(
-                fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = TextTer,
-                letterSpacing = 2.sp
-            ),
+            style = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TextTer, letterSpacing = 2.sp),
             modifier = Modifier.padding(start = 48.dp, bottom = 10.dp)
         )
 
@@ -301,17 +282,8 @@ private fun AppRow(
         ) {
             items(apps, key = { "${title}_${it.packageName}" }) { app ->
                 val fr = remember { FocusRequester() }
-                val mod = if (isFirst && app == apps.first()) {
-                    Modifier.focusRequester(firstFocus)
-                } else {
-                    Modifier.focusRequester(fr)
-                }
-                AppCard(
-                    app = app,
-                    modifier = mod,
-                    onLaunch = { onLaunch(app) },
-                    onLongPress = { onLongPress(app) }
-                )
+                val mod = if (isFirst && app == apps.first()) Modifier.focusRequester(firstFocus) else Modifier.focusRequester(fr)
+                AppCard(app = app, modifier = mod, onLaunch = { onLaunch(app) }, onLongPress = { onLongPress(app) })
             }
         }
     }
@@ -319,56 +291,47 @@ private fun AppRow(
 
 @Composable
 private fun AppCard(
-    app: TvApp,
-    modifier: Modifier = Modifier,
-    onLaunch: () -> Unit,
-    onLongPress: () -> Unit
+    app: TvApp, modifier: Modifier = Modifier,
+    onLaunch: () -> Unit, onLongPress: () -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
-
-    val scale by animateFloatAsState(
-        targetValue = if (focused) 1.06f else 1f,
-        animationSpec = tween(180, easing = FastOutSlowInEasing),
-        label = "s"
-    )
-    val borderAlpha by animateFloatAsState(
-        targetValue = if (focused) 0.5f else 0f,
-        animationSpec = tween(150),
-        label = "b"
-    )
+    val scale by animateFloatAsState(if (focused) 1.06f else 1f, tween(180, easing = FastOutSlowInEasing), label = "s")
+    val borderAlpha by animateFloatAsState(if (focused) 0.5f else 0f, tween(150), label = "b")
 
     val isSettings = app.category == AppCategory.SETTINGS
     val w = if (isSettings) 110.dp else 130.dp
     val h = if (isSettings) 85.dp else 105.dp
     val iconSize = if (isSettings) 32 else 44
 
+    // Long-press detection for D-pad center
+    var centerDownTime by remember { mutableStateOf(0L) }
+
     Box(
         modifier = modifier
-            .width(w)
-            .height(h)
+            .width(w).height(h)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(16.dp))
             .background(if (focused) SurfaceFocused else Surface)
-            .then(
-                if (focused) Modifier.border(1.5.dp, FocusGlow.copy(alpha = borderAlpha), RoundedCornerShape(16.dp))
-                else Modifier
-            )
+            .then(if (focused) Modifier.border(1.5.dp, FocusGlow.copy(alpha = borderAlpha), RoundedCornerShape(16.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .focusable()
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onTap = { onLaunch() },
-                    onLongPress = { onLongPress() }
-                )
-            }
-            .onKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown) {
-                    when (event.key) {
-                        Key.Enter, Key.DirectionCenter -> { onLaunch(); true }
-                        Key.Menu -> { onLongPress(); true }
-                        else -> false
+            .pointerInput(Unit) { detectTapGestures(onTap = { onLaunch() }, onLongPress = { onLongPress() }) }
+            .onPreviewKeyEvent { event ->
+                when {
+                    event.key == Key.Enter || event.key == Key.DirectionCenter -> {
+                        if (event.type == KeyEventType.KeyDown) {
+                            if (centerDownTime == 0L) centerDownTime = System.currentTimeMillis()
+                            val held = System.currentTimeMillis() - centerDownTime
+                            if (held > 600) { onLongPress(); centerDownTime = 0L; true } else false
+                        } else if (event.type == KeyEventType.KeyUp) {
+                            val held = System.currentTimeMillis() - centerDownTime
+                            centerDownTime = 0L
+                            if (held in 1..600) { onLaunch(); true } else true
+                        } else false
                     }
-                } else false
+                    event.type == KeyEventType.KeyDown && event.key == Key.Menu -> { onLongPress(); true }
+                    else -> false
+                }
             },
         contentAlignment = Alignment.Center
     ) {
@@ -378,33 +341,21 @@ private fun AppCard(
             modifier = Modifier.padding(10.dp)
         ) {
             if (app.icon != null) {
-                Image(
-                    painter = BitmapPainter(app.icon),
-                    contentDescription = null,
-                    modifier = Modifier.size(iconSize.dp)
-                )
+                val painter = remember(app.icon) { BitmapPainter(app.icon) }
+                Image(painter = painter, contentDescription = null, modifier = Modifier.size(iconSize.dp))
             } else if (isSettings) {
                 SettingsEmoji(app.label)
             } else {
-                Text(
-                    text = app.label.take(1).uppercase(),
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Light,
-                    color = AccentBlue
-                )
+                Text(app.label.take(1).uppercase(), fontSize = 24.sp, fontWeight = FontWeight.Light, color = AccentBlue)
             }
             Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = app.label,
                 style = TextStyle(
-                    fontSize = 11.sp,
-                    fontWeight = if (focused) FontWeight.Medium else FontWeight.Normal,
-                    color = if (focused) TextW else TextSec,
-                    textAlign = TextAlign.Center,
-                    letterSpacing = 0.2.sp
+                    fontSize = 11.sp, fontWeight = if (focused) FontWeight.Medium else FontWeight.Normal,
+                    color = if (focused) TextW else TextSec, textAlign = TextAlign.Center, letterSpacing = 0.2.sp
                 ),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                maxLines = 1, overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -426,36 +377,19 @@ private fun SettingsEmoji(label: String) {
 
 @Composable
 private fun ContextMenu(
-    app: TvApp,
-    isFavorite: Boolean,
-    onDismiss: () -> Unit,
-    onToggleFavorite: () -> Unit,
-    onHide: () -> Unit
+    app: TvApp, isFavorite: Boolean,
+    onDismiss: () -> Unit, onToggleFavorite: () -> Unit, onHide: () -> Unit
 ) {
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.7f))
-            .clickable(onClick = onDismiss)
-            .onKeyEvent {
-                if (it.type == KeyEventType.KeyDown && it.key == Key.Back) { onDismiss(); true } else false
-            },
+        modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.7f)).clickable(onClick = onDismiss)
+            .onKeyEvent { if (it.type == KeyEventType.KeyDown && it.key == Key.Back) { onDismiss(); true } else false },
         contentAlignment = Alignment.Center
     ) {
         Column(
-            modifier = Modifier
-                .width(260.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(Color(0xFF2C2C2E))
-                .padding(vertical = 8.dp),
+            modifier = Modifier.width(260.dp).clip(RoundedCornerShape(16.dp)).background(SurfaceFocused).padding(vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                text = app.label,
-                style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextW),
-                modifier = Modifier.padding(vertical = 10.dp)
-            )
-
+            Text(app.label, style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextW), modifier = Modifier.padding(vertical = 10.dp))
             Box(Modifier.fillMaxWidth().height(0.5.dp).background(TextTer.copy(alpha = 0.3f)))
 
             val favFocus = remember { FocusRequester() }
@@ -463,10 +397,8 @@ private fun ContextMenu(
 
             MenuButton(
                 text = if (isFavorite) "Remove from Favorites" else "Add to Favorites",
-                modifier = Modifier.focusRequester(favFocus),
-                onClick = onToggleFavorite
+                modifier = Modifier.focusRequester(favFocus), onClick = onToggleFavorite
             )
-
             if (app.category != AppCategory.SETTINGS) {
                 MenuButton(text = "Hide App", onClick = onHide)
             }
@@ -479,23 +411,12 @@ private fun MenuButton(text: String, modifier: Modifier = Modifier, onClick: () 
     var focused by remember { mutableStateOf(false) }
     Text(
         text = text,
-        style = TextStyle(
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Normal,
-            color = if (focused) TextW else TextSec,
-            textAlign = TextAlign.Center
-        ),
-        modifier = modifier
-            .fillMaxWidth()
+        style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Normal, color = if (focused) TextW else TextSec, textAlign = TextAlign.Center),
+        modifier = modifier.fillMaxWidth()
             .background(if (focused) AccentBlue.copy(alpha = 0.3f) else Color.Transparent)
-            .onFocusChanged { focused = it.isFocused }
-            .focusable()
+            .onFocusChanged { focused = it.isFocused }.focusable()
             .clickable(onClick = onClick)
-            .onKeyEvent { e ->
-                if (e.type == KeyEventType.KeyDown && (e.key == Key.Enter || e.key == Key.DirectionCenter)) {
-                    onClick(); true
-                } else false
-            }
+            .onKeyEvent { e -> if (e.type == KeyEventType.KeyDown && (e.key == Key.Enter || e.key == Key.DirectionCenter)) { onClick(); true } else false }
             .padding(vertical = 12.dp, horizontal = 20.dp)
     )
 }
@@ -505,136 +426,112 @@ private fun MenuButton(text: String, modifier: Modifier = Modifier, onClick: () 
 @Composable
 fun QuickSettingsPanel(onDismiss: () -> Unit) {
     val context = LocalContext.current
-    val audioManager = remember {
-        context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-    }
+    val audioManager = remember { context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager }
 
-    var volume by remember {
-        mutableIntStateOf(audioManager.getStreamVolume(android.media.AudioManager.STREAM_MUSIC))
-    }
+    var volume by remember { mutableIntStateOf(audioManager.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)) }
     val maxVol = remember { audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC) }
 
     var brightness by remember {
-        mutableIntStateOf(
-            try { android.provider.Settings.System.getInt(context.contentResolver, android.provider.Settings.System.SCREEN_BRIGHTNESS) }
-            catch (_: Exception) { 128 }
-        )
+        mutableIntStateOf(try { Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS) } catch (_: Exception) { 128 })
+    }
+    val canWriteSettings = remember { Settings.System.canWrite(context) }
+
+    fun adjustBrightness(delta: Int) {
+        brightness = (brightness + delta).coerceIn(10, 255)
+        if (canWriteSettings) {
+            try { Settings.System.putInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, brightness) } catch (_: Exception) {}
+        }
     }
 
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.65f))
-            .clickable(onClick = onDismiss)
-            .onKeyEvent {
-                if (it.type == KeyEventType.KeyDown && (it.key == Key.Back || it.key == Key.Menu)) {
-                    onDismiss(); true
-                } else false
-            },
+        modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.65f)).clickable(onClick = onDismiss)
+            .onKeyEvent { if (it.type == KeyEventType.KeyDown && (it.key == Key.Back || it.key == Key.Menu)) { onDismiss(); true } else false },
         contentAlignment = Alignment.CenterEnd
     ) {
         val panelFocus = remember { FocusRequester() }
         LaunchedEffect(Unit) { try { panelFocus.requestFocus() } catch (_: Exception) {} }
 
         Column(
-            modifier = Modifier
-                .width(280.dp)
-                .padding(end = 32.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(Color(0xFF1C1C1E).copy(alpha = 0.95f))
-                .padding(24.dp)
-                .focusRequester(panelFocus)
-                .focusable()
+            modifier = Modifier.width(280.dp).padding(end = 32.dp)
+                .clip(RoundedCornerShape(20.dp)).background(Surface.copy(alpha = 0.95f)).padding(24.dp)
+                .focusRequester(panelFocus).focusable()
                 .onKeyEvent { event ->
-                    if (event.type == KeyEventType.KeyDown) {
-                        when (event.key) {
-                            Key.DirectionUp -> {
-                                val newVol = (volume + 1).coerceAtMost(maxVol)
-                                audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, newVol, 0)
-                                volume = newVol; true
-                            }
-                            Key.DirectionDown -> {
-                                val newVol = (volume - 1).coerceAtLeast(0)
-                                audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, newVol, 0)
-                                volume = newVol; true
-                            }
-                            Key.DirectionRight -> {
-                                brightness = (brightness + 15).coerceAtMost(255)
-                                try {
-                                    android.provider.Settings.System.putInt(context.contentResolver, android.provider.Settings.System.SCREEN_BRIGHTNESS, brightness)
-                                } catch (_: Exception) {}
-                                true
-                            }
-                            Key.DirectionLeft -> {
-                                brightness = (brightness - 15).coerceAtLeast(10)
-                                try {
-                                    android.provider.Settings.System.putInt(context.contentResolver, android.provider.Settings.System.SCREEN_BRIGHTNESS, brightness)
-                                } catch (_: Exception) {}
-                                true
-                            }
-                            Key.Back, Key.Menu -> { onDismiss(); true }
-                            else -> false
-                        }
+                    if (event.type == KeyEventType.KeyDown) when (event.key) {
+                        Key.DirectionUp -> { val n = (volume + 1).coerceAtMost(maxVol); audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, n, 0); volume = n; true }
+                        Key.DirectionDown -> { val n = (volume - 1).coerceAtLeast(0); audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, n, 0); volume = n; true }
+                        Key.DirectionRight -> { adjustBrightness(15); true }
+                        Key.DirectionLeft -> { adjustBrightness(-15); true }
+                        Key.Back, Key.Menu -> { onDismiss(); true }
+                        else -> false
                     } else false
                 },
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            Text(
-                text = "Settings",
-                style = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = TextW, letterSpacing = 0.5.sp)
-            )
+            Text("Settings", style = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = TextW, letterSpacing = 0.5.sp))
 
-            // Volume
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                    Text("Volume", style = TextStyle(fontSize = 13.sp, color = TextSec))
-                    Text("${(volume * 100 / maxVol.coerceAtLeast(1))}%", style = TextStyle(fontSize = 13.sp, color = TextW, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace))
-                }
-                SliderBar(value = volume.toFloat() / maxVol.coerceAtLeast(1).toFloat())
-                Text("↑↓ to adjust", style = TextStyle(fontSize = 10.sp, color = TextTer))
-            }
-
-            // Brightness
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                    Text("Brightness", style = TextStyle(fontSize = 13.sp, color = TextSec))
-                    Text("${(brightness * 100 / 255)}%", style = TextStyle(fontSize = 13.sp, color = TextW, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace))
-                }
-                SliderBar(value = brightness.toFloat() / 255f)
-                Text("←→ to adjust", style = TextStyle(fontSize = 10.sp, color = TextTer))
-            }
+            QsSlider("Volume", "${(volume * 100 / maxVol.coerceAtLeast(1))}%", volume.toFloat() / maxVol.coerceAtLeast(1), "↑↓")
+            QsSlider("Brightness", "${brightness * 100 / 255}%", brightness / 255f, "←→")
 
             Box(Modifier.fillMaxWidth().height(0.5.dp).background(TextTer.copy(alpha = 0.2f)))
 
-            Text(
-                text = "Press Back to close",
-                style = TextStyle(fontSize = 11.sp, color = TextTer, textAlign = TextAlign.Center),
-                modifier = Modifier.fillMaxWidth()
-            )
+            // Cast button
+            QsActionButton(label = "Screen Cast", emoji = "📺") { AppDiscovery.openCastSettings(context) }
+
+            // Sleep button — sets brightness to minimum and activates screensaver
+            QsActionButton(label = "Sleep", emoji = "💤") {
+                onDismiss()
+                try {
+                    if (Settings.System.canWrite(context)) {
+                        Settings.System.putInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, 1)
+                    }
+                } catch (_: Exception) {}
+                (context as? MainActivity)?.showScreensaver?.value = true
+            }
+
+            Text("Press Back to close", style = TextStyle(fontSize = 11.sp, color = TextTer, textAlign = TextAlign.Center), modifier = Modifier.fillMaxWidth())
         }
     }
 }
 
 @Composable
-private fun SliderBar(value: Float) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(4.dp)
-            .clip(RoundedCornerShape(2.dp))
-            .background(Color(0xFF3A3A3C))
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxHeight()
-                .fillMaxWidth(value.coerceIn(0f, 1f))
-                .clip(RoundedCornerShape(2.dp))
-                .background(TextW.copy(alpha = 0.8f))
-        )
+private fun QsSlider(label: String, valueText: String, value: Float, hint: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+            Text(label, style = TextStyle(fontSize = 13.sp, color = TextSec))
+            Text(valueText, style = TextStyle(fontSize = 13.sp, color = TextW, fontFamily = FontFamily.Monospace))
+        }
+        SliderBar(value = value)
+        Text("$hint to adjust", style = TextStyle(fontSize = 10.sp, color = TextTer))
     }
 }
 
-// ─── Photo Screensaver ─────────────────────────────────────
+@Composable
+private fun QsActionButton(label: String, emoji: String, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (focused) AccentBlue.copy(alpha = 0.2f) else Color.Transparent)
+            .onFocusChanged { focused = it.isFocused }.focusable()
+            .clickable(onClick = onClick)
+            .onKeyEvent { e -> if (e.type == KeyEventType.KeyDown && (e.key == Key.Enter || e.key == Key.DirectionCenter)) { onClick(); true } else false }
+            .padding(vertical = 10.dp, horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(emoji, fontSize = 18.sp)
+        Text(label, style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Normal, color = if (focused) TextW else TextSec))
+    }
+}
+
+@Composable
+private fun SliderBar(value: Float) {
+    Box(modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color(0xFF3A3A3C))) {
+        Box(modifier = Modifier.fillMaxHeight().fillMaxWidth(value.coerceIn(0f, 1f)).clip(RoundedCornerShape(2.dp)).background(TextW.copy(alpha = 0.8f)))
+    }
+}
+
+// ─── Screensaver ───────────────────────────────────────────
 
 @Composable
 fun PhotoScreensaver(onDismiss: () -> Unit) {
@@ -657,37 +554,15 @@ fun PhotoScreensaver(onDismiss: () -> Unit) {
     }
 
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .clickable { onDismiss() },
+        modifier = Modifier.fillMaxSize().background(Color.Black).clickable { onDismiss() },
         contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.graphicsLayer {
-                translationX = (dx - 0.5f) * 500f
-                translationY = (dy - 0.5f) * 200f
-            }
+            modifier = Modifier.graphicsLayer { translationX = (dx - 0.5f) * 500f; translationY = (dy - 0.5f) * 200f }
         ) {
-            Text(
-                text = time,
-                style = TextStyle(
-                    fontSize = 64.sp,
-                    fontWeight = FontWeight.Thin,
-                    color = TextW.copy(alpha = 0.55f),
-                    letterSpacing = 4.sp
-                )
-            )
-            Text(
-                text = date,
-                style = TextStyle(
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Light,
-                    color = TextW.copy(alpha = 0.25f),
-                    letterSpacing = 1.5.sp
-                )
-            )
+            Text(time, style = TextStyle(fontSize = 64.sp, fontWeight = FontWeight.Thin, color = TextW.copy(alpha = 0.55f), letterSpacing = 4.sp))
+            Text(date, style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Light, color = TextW.copy(alpha = 0.25f), letterSpacing = 1.5.sp))
         }
     }
 }

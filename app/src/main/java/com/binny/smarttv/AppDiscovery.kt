@@ -2,9 +2,9 @@ package com.binny.smarttv
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
-import android.graphics.Bitmap
 import android.util.Log
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -43,6 +43,8 @@ object AppDiscovery {
         "com.mxtech.videoplayer.ad",
         "org.videolan.vlc",
         "com.kodi",
+        "com.disney.disneyplus",
+        "com.jio.media.ondemand",
     )
 
     private val musicApps = setOf(
@@ -50,6 +52,7 @@ object AppDiscovery {
         "com.spotify.music",
         "com.gaana",
         "com.jio.media.jiobeats",
+        "com.apple.android.music",
     )
 
     private val settingsEntries = listOf(
@@ -78,17 +81,32 @@ object AppDiscovery {
                 info.loadIcon(pm).toBitmap(96, 96).asImageBitmap()
             } catch (_: Exception) { null }
 
-            val category = when {
-                pkg in watchApps -> AppCategory.WATCH
-                pkg in musicApps -> AppCategory.MUSIC
-                else -> AppCategory.APPS
-            }
+            val category = categorize(pkg, info.activityInfo.applicationInfo)
             apps.add(TvApp(label, pkg, bitmap, category))
         }
 
         apps.sortBy { it.label.lowercase() }
         apps.addAll(settingsEntries)
+
+        pruneOrphans(context, seen)
+
         return apps
+    }
+
+    private fun categorize(pkg: String, appInfo: ApplicationInfo?): AppCategory {
+        if (pkg in watchApps) return AppCategory.WATCH
+        if (pkg in musicApps) return AppCategory.MUSIC
+
+        val cat = appInfo?.category ?: return AppCategory.APPS
+        return when (cat) {
+            ApplicationInfo.CATEGORY_VIDEO -> AppCategory.WATCH
+            ApplicationInfo.CATEGORY_AUDIO -> AppCategory.MUSIC
+            else -> AppCategory.APPS
+        }
+    }
+
+    private fun pruneOrphans(context: Context, installedPkgs: Set<String>) {
+        PrefsManager.pruneOrphans(context, installedPkgs)
     }
 
     fun launchApp(context: Context, app: TvApp) {
@@ -114,6 +132,20 @@ object AppDiscovery {
             }
         } catch (e: Exception) {
             Log.e("MomTV", "Failed to launch ${app.label}", e)
+        }
+    }
+
+    fun openCastSettings(context: Context) {
+        try {
+            val intent = Intent("android.settings.CAST_SETTINGS")
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+        } catch (_: Exception) {
+            try {
+                val intent = Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+            } catch (_: Exception) {}
         }
     }
 }
